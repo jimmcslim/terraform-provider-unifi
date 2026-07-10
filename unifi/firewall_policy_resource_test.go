@@ -665,6 +665,7 @@ func Test_modelToFirewallPolicy(t *testing.T) {
 						ConnectionStates:    types.ListNull(types.StringType),
 						ICMPTypename:        types.StringNull(),
 						ICMPV6Typename:      types.StringNull(),
+						Schedule:            types.ObjectNull(firewallPolicyScheduleModel{}.AttributeTypes()),
 						Source:              srcObj,
 						Destination:         dstObj,
 						ID:                  types.StringNull(),
@@ -741,6 +742,7 @@ func TestFirewallPolicyIndexNotSent(t *testing.T) {
 		ConnectionStates:    types.ListNull(types.StringType),
 		ICMPTypename:        types.StringNull(),
 		ICMPV6Typename:      types.StringNull(),
+		Schedule:            types.ObjectNull(firewallPolicyScheduleModel{}.AttributeTypes()),
 		Source:              endpoint("z1"),
 		Destination:         endpoint("z2"),
 		ID:                  types.StringNull(),
@@ -1578,5 +1580,263 @@ func TestFirewallPolicyEndpointListsUseStateForUnknown(t *testing.T) {
 				t.Errorf("%s.%s must have a plan modifier (UseStateForUnknown) (#338)", ep, key)
 			}
 		}
+	}
+}
+
+func Test_firewallPolicyScheduleModel_AttributeTypes(t *testing.T) {
+	want := map[string]attr.Type{
+		"mode":             types.StringType,
+		"date":             types.StringType,
+		"repeat_on_days":   types.ListType{ElemType: types.StringType},
+		"time_all_day":     types.BoolType,
+		"time_range_start": types.StringType,
+		"time_range_end":   types.StringType,
+	}
+	if got := (firewallPolicyScheduleModel{}).AttributeTypes(); !reflect.DeepEqual(got, want) {
+		t.Errorf("firewallPolicyScheduleModel.AttributeTypes() = %v, want %v", got, want)
+	}
+}
+
+// TestFirewallPolicyScheduleSettable: the schedule block and all its
+// sub-attributes must be author-settable (Optional+Computed) so policies can be
+// scheduled from Terraform, not just read back.
+func TestFirewallPolicyScheduleSettable(t *testing.T) {
+	resp := &fwresource.SchemaResponse{}
+	(&firewallPolicyResource{}).Schema(context.Background(), fwresource.SchemaRequest{}, resp)
+
+	nested, ok := resp.Schema.Attributes["schedule"].(schema.SingleNestedAttribute)
+	if !ok {
+		t.Fatal("schedule is missing or not a SingleNestedAttribute")
+	}
+	if !nested.IsOptional() || !nested.IsComputed() {
+		t.Errorf("schedule must be Optional+Computed, got Optional=%v Computed=%v",
+			nested.IsOptional(), nested.IsComputed())
+	}
+	if len(nested.PlanModifiers) == 0 {
+		t.Error("schedule must have a plan modifier (UseStateForUnknown)")
+	}
+	for _, key := range []string{
+		"mode", "date", "repeat_on_days", "time_all_day", "time_range_start", "time_range_end",
+	} {
+		a, ok := nested.Attributes[key]
+		if !ok {
+			t.Errorf("schedule missing %q attribute", key)
+			continue
+		}
+		if !a.IsOptional() || !a.IsComputed() {
+			t.Errorf("schedule.%s must be Optional+Computed, got Optional=%v Computed=%v",
+				key, a.IsOptional(), a.IsComputed())
+		}
+	}
+}
+
+// TestFirewallPolicyScheduleDefaultWhenUnset: a config without a schedule block
+// must keep sending the always-on schedule the provider hardcoded before the
+// attribute existed, both for null (existing state) and unknown (during plan).
+func TestFirewallPolicyScheduleDefaultWhenUnset(t *testing.T) {
+	ctx := context.Background()
+	want := &unifi.FirewallPolicySchedule{Mode: "ALWAYS"}
+
+	for name, obj := range map[string]types.Object{
+		"null":    types.ObjectNull(firewallPolicyScheduleModel{}.AttributeTypes()),
+		"unknown": types.ObjectUnknown(firewallPolicyScheduleModel{}.AttributeTypes()),
+	} {
+		var diags diag.Diagnostics
+		got := scheduleModelToAPI(ctx, obj, &diags)
+		if diags.HasError() {
+			t.Fatalf("%s schedule: unexpected diagnostics: %v", name, diags)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s schedule: got %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+// TestFirewallPolicyScheduleRoundTrip: every schedule field must survive
+// API -> model -> API unchanged.
+//
+// This is a unit test (conversion round-trip) rather than an acceptance test
+// because zone-based firewall is unavailable in the dockerized acceptance
+// controller.
+func TestFirewallPolicyScheduleRoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	for name, api := range map[string]*unifi.FirewallPolicySchedule{
+		"weekly time range": {
+			Mode:           "EVERY_WEEK",
+			RepeatOnDays:   []string{"mon", "fri"},
+			TimeAllDay:     false,
+			TimeRangeStart: "08:00",
+			TimeRangeEnd:   "17:30",
+		},
+		"one time only": {
+			Mode:       "ONE_TIME_ONLY",
+			Date:       "2026-12-31",
+			TimeAllDay: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			obj := apiScheduleToModel(ctx, api, &diags)
+			if diags.HasError() {
+				t.Fatalf("apiScheduleToModel diagnostics: %v", diags)
+			}
+			if obj.IsNull() || obj.IsUnknown() {
+				t.Fatal("apiScheduleToModel returned null/unknown object")
+			}
+
+			got := scheduleModelToAPI(ctx, obj, &diags)
+			if diags.HasError() {
+				t.Fatalf("scheduleModelToAPI diagnostics: %v", diags)
+			}
+			if got.Mode != api.Mode || got.Date != api.Date ||
+				got.TimeAllDay != api.TimeAllDay ||
+				got.TimeRangeStart != api.TimeRangeStart ||
+				got.TimeRangeEnd != api.TimeRangeEnd {
+				t.Errorf("round-trip = %+v, want %+v", got, api)
+			}
+			if len(got.RepeatOnDays) != len(api.RepeatOnDays) {
+				t.Errorf("round-trip RepeatOnDays = %v, want %v", got.RepeatOnDays, api.RepeatOnDays)
+			} else {
+				for i := range api.RepeatOnDays {
+					if got.RepeatOnDays[i] != api.RepeatOnDays[i] {
+						t.Errorf("round-trip RepeatOnDays = %v, want %v",
+							got.RepeatOnDays, api.RepeatOnDays)
+						break
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFirewallPolicyScheduleNilFromAPI: a policy the controller reports without
+// a schedule must map to a null object, not a zero-value one.
+func TestFirewallPolicyScheduleNilFromAPI(t *testing.T) {
+	var diags diag.Diagnostics
+	obj := apiScheduleToModel(context.Background(), nil, &diags)
+	if diags.HasError() {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if !obj.IsNull() {
+		t.Errorf("apiScheduleToModel(nil) = %v, want null object", obj)
+	}
+}
+
+func Test_firewallPolicyScheduleConfigErrors(t *testing.T) {
+	days := func(vals ...string) types.List {
+		l, _ := types.ListValueFrom(context.Background(), types.StringType, vals)
+		return l
+	}
+
+	tests := []struct {
+		name     string
+		m        firewallPolicyScheduleModel
+		wantErrs int
+	}{
+		{
+			name: "valid weekly schedule",
+			m: firewallPolicyScheduleModel{
+				Mode:           types.StringValue("EVERY_WEEK"),
+				Date:           types.StringNull(),
+				RepeatOnDays:   days("sat", "sun"),
+				TimeAllDay:     types.BoolValue(false),
+				TimeRangeStart: types.StringValue("22:00"),
+				TimeRangeEnd:   types.StringValue("06:00"),
+			},
+			wantErrs: 0,
+		},
+		{
+			name: "valid one-time schedule",
+			m: firewallPolicyScheduleModel{
+				Mode:           types.StringValue("ONE_TIME_ONLY"),
+				Date:           types.StringValue("2026-12-31"),
+				RepeatOnDays:   types.ListNull(types.StringType),
+				TimeAllDay:     types.BoolValue(true),
+				TimeRangeStart: types.StringNull(),
+				TimeRangeEnd:   types.StringNull(),
+			},
+			wantErrs: 0,
+		},
+		{
+			name: "all unknown is skipped",
+			m: firewallPolicyScheduleModel{
+				Mode:           types.StringUnknown(),
+				Date:           types.StringUnknown(),
+				RepeatOnDays:   types.ListUnknown(types.StringType),
+				TimeAllDay:     types.BoolUnknown(),
+				TimeRangeStart: types.StringUnknown(),
+				TimeRangeEnd:   types.StringUnknown(),
+			},
+			wantErrs: 0,
+		},
+		{
+			name: "date with non-one-time mode",
+			m: firewallPolicyScheduleModel{
+				Mode:         types.StringValue("EVERY_DAY"),
+				Date:         types.StringValue("2026-12-31"),
+				RepeatOnDays: types.ListNull(types.StringType),
+			},
+			wantErrs: 1,
+		},
+		{
+			name: "date with mode omitted (defaults to ALWAYS)",
+			m: firewallPolicyScheduleModel{
+				Mode:         types.StringNull(),
+				Date:         types.StringValue("2026-12-31"),
+				RepeatOnDays: types.ListNull(types.StringType),
+			},
+			wantErrs: 1,
+		},
+		{
+			name: "one-time mode without date",
+			m: firewallPolicyScheduleModel{
+				Mode:         types.StringValue("ONE_TIME_ONLY"),
+				Date:         types.StringNull(),
+				RepeatOnDays: types.ListNull(types.StringType),
+			},
+			wantErrs: 1,
+		},
+		{
+			name: "repeat_on_days with daily mode",
+			m: firewallPolicyScheduleModel{
+				Mode:         types.StringValue("EVERY_DAY"),
+				Date:         types.StringNull(),
+				RepeatOnDays: days("mon"),
+			},
+			wantErrs: 1,
+		},
+		{
+			name: "one-sided time range",
+			m: firewallPolicyScheduleModel{
+				Mode:           types.StringValue("EVERY_DAY"),
+				Date:           types.StringNull(),
+				RepeatOnDays:   types.ListNull(types.StringType),
+				TimeRangeStart: types.StringValue("08:00"),
+				TimeRangeEnd:   types.StringNull(),
+			},
+			wantErrs: 1,
+		},
+		{
+			name: "time_all_day with time range",
+			m: firewallPolicyScheduleModel{
+				Mode:           types.StringValue("EVERY_DAY"),
+				Date:           types.StringNull(),
+				RepeatOnDays:   types.ListNull(types.StringType),
+				TimeAllDay:     types.BoolValue(true),
+				TimeRangeStart: types.StringValue("08:00"),
+				TimeRangeEnd:   types.StringValue("17:00"),
+			},
+			wantErrs: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := firewallPolicyScheduleConfigErrors(tt.m)
+			if len(got) != tt.wantErrs {
+				t.Errorf("firewallPolicyScheduleConfigErrors() = %v (%d errors), want %d",
+					got, len(got), tt.wantErrs)
+			}
+		})
 	}
 }

@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### ✨ Features
 
+- **`unifi_firewall_policy`: schedule when a policy is active.** A new `Optional + Computed` `schedule` attribute surfaces the controller's policy scheduling: `mode` (`ALWAYS`, `EVERY_DAY`, `EVERY_WEEK`, `ONE_TIME_ONLY`), `repeat_on_days` (`mon`–`sun`, weekly mode), a daily `time_range_start`/`time_range_end` window or `time_all_day`, and a `date` for one-time policies. The provider previously hardcoded every policy to an always-on schedule and dropped whatever was configured in the UI on the next apply; the schedule now round-trips. Omitting the block keeps today's always-on behavior; contradictory combinations (e.g. `repeat_on_days` outside `EVERY_WEEK`) are rejected at plan time. Note: removing a previously configured `schedule` block does not revert the policy — set `schedule = { mode = "ALWAYS" }` explicitly.
 - **`unifi_ap_group`: manage AP group membership.** Full CRUD, complementing the existing read-only data source. Which APs belong to a group was fixed in the controller UI: the data source could read a group, but nothing could create or edit one, so `unifi_wlan.ap_group_ids` could only reference groups built by hand. The resource writes membership through the v2 `apgroups` API. `device_macs` reuses the `unifi_client` MAC type, so `AA-BB-…` and `aa:bb:…` read back equal rather than churning the plan on every refresh. Import takes the group ID, or `site:id` for a non-default site (#359, go-unifi#52).
 
 ### 🐛 Bug Fixes

@@ -149,6 +149,31 @@ resource "unifi_firewall_policy" "lan_dmz_ping" {
   }
 }
 
+# Block IoT internet access overnight on weekends using a schedule. Omit the
+# schedule block entirely for an always-on policy.
+resource "unifi_firewall_policy" "iot_weekend_curfew" {
+  name     = "Block IoT internet on weekend nights"
+  action   = "BLOCK"
+  protocol = "all"
+
+  schedule = {
+    mode             = "EVERY_WEEK"
+    repeat_on_days   = ["sat", "sun"]
+    time_range_start = "22:00"
+    time_range_end   = "06:00"
+  }
+
+  source = {
+    zone_id         = unifi_firewall_zone.iot.id
+    matching_target = "ANY"
+  }
+
+  destination = {
+    zone_id         = unifi_firewall_zone.lan.id
+    matching_target = "ANY"
+  }
+}
+
 # Block access to specific web domains (FQDN matching) from the LAN zone.
 resource "unifi_firewall_policy" "block_web_domains" {
   name     = "Block social media from LAN"
@@ -188,6 +213,7 @@ resource "unifi_firewall_policy" "block_web_domains" {
 - `ip_version` (String) The IP version to match: `BOTH`, `IPV4`, or `IPV6`. Defaults to `IPV4`.
 - `logging` (Boolean) Whether to log packets matching this policy. Defaults to `false`.
 - `protocol` (String) The protocol to match: `all`, `tcp`, `udp`, `tcp_udp`, `icmp`, or `icmpv6`. Defaults to `all`. Note: for `icmp`/`icmpv6` policies the controller rejects `create_allow_respond = true` (`FirewallPolicyCreateRespondTrafficPolicyNotAllowed`) — keep it `false` and add an explicit reverse policy if you need the reply.
+- `schedule` (Attributes) When the policy is active. Omit for an always-on policy. Note: removing a previously configured `schedule` does not revert the policy to always-on — set `schedule = { mode = "ALWAYS" }` explicitly to revert. (see [below for nested schema](#nestedatt--schedule))
 - `site` (String) The name of the UniFi site. Defaults to the site configured in the provider.
 - `timeouts` (Attributes) (see [below for nested schema](#nestedatt--timeouts))
 
@@ -244,6 +270,19 @@ Optional:
 Read-Only:
 
 - `matching_target_type` (String) How the matching target is specified (`ANY`, `SPECIFIC`, `LIST`, `OBJECT`). Managed by the UniFi controller; the provider round-trips it so updates are accepted.
+
+
+<a id="nestedatt--schedule"></a>
+### Nested Schema for `schedule`
+
+Optional:
+
+- `date` (String) The date the policy applies, in `YYYY-MM-DD` format. Required when `mode` is `ONE_TIME_ONLY`, unused otherwise.
+- `mode` (String) When the policy applies: `ALWAYS`, `EVERY_DAY`, `EVERY_WEEK`, or `ONE_TIME_ONLY`. Defaults to `ALWAYS`.
+- `repeat_on_days` (List of String) Days of the week the policy applies (`mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`). Only used when `mode` is `EVERY_WEEK`.
+- `time_all_day` (Boolean) Whether the policy applies for the whole day instead of a time range. Defaults to `false`.
+- `time_range_end` (String) End of the daily time range, in 24-hour `HH:MM` format. Set together with `time_range_start`.
+- `time_range_start` (String) Start of the daily time range, in 24-hour `HH:MM` format. Set together with `time_range_end`; leave both unset (or set `time_all_day = true`) for an all-day schedule.
 
 
 <a id="nestedatt--timeouts"></a>

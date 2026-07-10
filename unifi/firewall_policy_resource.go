@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -32,10 +33,11 @@ import (
 )
 
 var (
-	_ resource.Resource                 = &firewallPolicyResource{}
-	_ resource.ResourceWithImportState  = &firewallPolicyResource{}
-	_ resource.ResourceWithIdentity     = &firewallPolicyResource{}
-	_ resource.ResourceWithUpgradeState = &firewallPolicyResource{}
+	_ resource.Resource                     = &firewallPolicyResource{}
+	_ resource.ResourceWithImportState      = &firewallPolicyResource{}
+	_ resource.ResourceWithIdentity         = &firewallPolicyResource{}
+	_ resource.ResourceWithUpgradeState     = &firewallPolicyResource{}
+	_ resource.ResourceWithConfigValidators = &firewallPolicyResource{}
 )
 
 // Ensure provider defined types fully satisfy list interfaces.
@@ -88,6 +90,7 @@ type firewallPolicyModel struct {
 	ConnectionStates    types.List     `tfsdk:"connection_states"`
 	ICMPTypename        types.String   `tfsdk:"icmp_typename"`
 	ICMPV6Typename      types.String   `tfsdk:"icmp_v6_typename"`
+	Schedule            types.Object   `tfsdk:"schedule"`
 	Source              types.Object   `tfsdk:"source"`
 	Destination         types.Object   `tfsdk:"destination"`
 	Timeouts            timeouts.Value `tfsdk:"timeouts"`
@@ -123,6 +126,27 @@ func (m firewallPolicyEndpointModel) AttributeTypes() map[string]attr.Type {
 		"ip_group_id":          types.StringType,
 		"port_matching_type":   types.StringType,
 		"matching_target_type": types.StringType,
+	}
+}
+
+// firewallPolicyScheduleModel is the nested schedule block model.
+type firewallPolicyScheduleModel struct {
+	Mode           types.String `tfsdk:"mode"`
+	Date           types.String `tfsdk:"date"`
+	RepeatOnDays   types.List   `tfsdk:"repeat_on_days"`
+	TimeAllDay     types.Bool   `tfsdk:"time_all_day"`
+	TimeRangeStart types.String `tfsdk:"time_range_start"`
+	TimeRangeEnd   types.String `tfsdk:"time_range_end"`
+}
+
+func (m firewallPolicyScheduleModel) AttributeTypes() map[string]attr.Type {
+	return map[string]attr.Type{
+		"mode":             types.StringType,
+		"date":             types.StringType,
+		"repeat_on_days":   types.ListType{ElemType: types.StringType},
+		"time_all_day":     types.BoolType,
+		"time_range_start": types.StringType,
+		"time_range_end":   types.StringType,
 	}
 }
 
@@ -245,6 +269,74 @@ func (r *firewallPolicyResource) Schema(
 			Computed:            true,
 			PlanModifiers: []planmodifier.String{
 				stringplanmodifier.UseStateForUnknown(),
+			},
+		},
+	}
+
+	scheduleAttrs := map[string]schema.Attribute{
+		"mode": schema.StringAttribute{
+			MarkdownDescription: "When the policy applies: `ALWAYS`, `EVERY_DAY`, `EVERY_WEEK`, or `ONE_TIME_ONLY`. Defaults to `ALWAYS`.",
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString("ALWAYS"),
+			Validators: []validator.String{
+				stringvalidator.OneOf("ALWAYS", "EVERY_DAY", "EVERY_WEEK", "ONE_TIME_ONLY"),
+			},
+		},
+		"date": schema.StringAttribute{
+			MarkdownDescription: "The date the policy applies, in `YYYY-MM-DD` format. Required when `mode` is `ONE_TIME_ONLY`, unused otherwise.",
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString(""),
+			Validators: []validator.String{
+				stringvalidator.RegexMatches(
+					regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})?$`),
+					`must be a date in YYYY-MM-DD format (e.g. "2026-12-31")`,
+				),
+			},
+		},
+		"repeat_on_days": schema.ListAttribute{
+			MarkdownDescription: "Days of the week the policy applies (`mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`). Only used when `mode` is `EVERY_WEEK`.",
+			Optional:            true,
+			Computed:            true,
+			ElementType:         types.StringType,
+			Validators: []validator.List{
+				listvalidator.ValueStringsAre(
+					stringvalidator.OneOf("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
+				),
+			},
+			PlanModifiers: []planmodifier.List{
+				listplanmodifier.UseStateForUnknown(),
+			},
+		},
+		"time_all_day": schema.BoolAttribute{
+			MarkdownDescription: "Whether the policy applies for the whole day instead of a time range. Defaults to `false`.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"time_range_start": schema.StringAttribute{
+			MarkdownDescription: "Start of the daily time range, in 24-hour `HH:MM` format. Set together with `time_range_end`; leave both unset (or set `time_all_day = true`) for an all-day schedule.",
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString(""),
+			Validators: []validator.String{
+				stringvalidator.RegexMatches(
+					regexp.MustCompile(`^(([01]\d|2[0-3]):[0-5]\d)?$`),
+					`must be a 24-hour time in HH:MM format (e.g. "22:00")`,
+				),
+			},
+		},
+		"time_range_end": schema.StringAttribute{
+			MarkdownDescription: "End of the daily time range, in 24-hour `HH:MM` format. Set together with `time_range_start`.",
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString(""),
+			Validators: []validator.String{
+				stringvalidator.RegexMatches(
+					regexp.MustCompile(`^(([01]\d|2[0-3]):[0-5]\d)?$`),
+					`must be a 24-hour time in HH:MM format (e.g. "06:00")`,
+				),
 			},
 		},
 	}
@@ -379,6 +471,18 @@ func (r *firewallPolicyResource) Schema(
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"schedule": schema.SingleNestedAttribute{
+				MarkdownDescription: "When the policy is active. Omit for an always-on policy. " +
+					"Note: removing a previously configured `schedule` does not revert the " +
+					"policy to always-on — set `schedule = { mode = \"ALWAYS\" }` explicitly " +
+					"to revert.",
+				Optional:   true,
+				Computed:   true,
+				Attributes: scheduleAttrs,
+				PlanModifiers: []planmodifier.Object{
+					objectplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"source": schema.SingleNestedAttribute{
 				MarkdownDescription: "The source endpoint of the policy.",
 				Required:            true,
@@ -395,6 +499,93 @@ func (r *firewallPolicyResource) Schema(
 			),
 		},
 	}
+}
+
+func (r *firewallPolicyResource) ConfigValidators(
+	_ context.Context,
+) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		&firewallPolicyScheduleValidator{},
+	}
+}
+
+// firewallPolicyScheduleValidator rejects schedule configs whose sub-attributes
+// contradict the schedule mode (e.g. a date on a weekly schedule).
+type firewallPolicyScheduleValidator struct{}
+
+func (v *firewallPolicyScheduleValidator) Description(_ context.Context) string {
+	return "schedule sub-attributes must be consistent with the schedule mode"
+}
+
+func (v *firewallPolicyScheduleValidator) MarkdownDescription(_ context.Context) string {
+	return "schedule sub-attributes must be consistent with the schedule mode"
+}
+
+func (v *firewallPolicyScheduleValidator) ValidateResource(
+	ctx context.Context,
+	req resource.ValidateConfigRequest,
+	resp *resource.ValidateConfigResponse,
+) {
+	var obj types.Object
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("schedule"), &obj)...)
+	if resp.Diagnostics.HasError() || obj.IsNull() || obj.IsUnknown() {
+		return
+	}
+
+	var m firewallPolicyScheduleModel
+	resp.Diagnostics.Append(obj.As(ctx, &m, basetypes.ObjectAsOptions{})...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	for _, msg := range firewallPolicyScheduleConfigErrors(m) {
+		resp.Diagnostics.AddAttributeError(path.Root("schedule"), "Invalid Schedule", msg)
+	}
+}
+
+// firewallPolicyScheduleConfigErrors returns the mode/sub-attribute contradictions
+// in a schedule config. Unknown values are skipped — they are only resolvable at
+// apply time. A null mode is treated as the schema default (ALWAYS).
+func firewallPolicyScheduleConfigErrors(m firewallPolicyScheduleModel) []string {
+	var errs []string
+
+	modeKnown := !m.Mode.IsUnknown()
+	mode := m.Mode.ValueString()
+	if m.Mode.IsNull() {
+		mode = "ALWAYS"
+	}
+
+	dateKnown := !m.Date.IsUnknown()
+	dateSet := dateKnown && !m.Date.IsNull() && m.Date.ValueString() != ""
+	if modeKnown && dateSet && mode != "ONE_TIME_ONLY" {
+		errs = append(errs, fmt.Sprintf(
+			"date is only used when mode is ONE_TIME_ONLY (mode is %q)", mode))
+	}
+	if modeKnown && mode == "ONE_TIME_ONLY" && dateKnown && !dateSet {
+		errs = append(errs, "date (YYYY-MM-DD) is required when mode is ONE_TIME_ONLY")
+	}
+
+	daysSet := !m.RepeatOnDays.IsNull() && !m.RepeatOnDays.IsUnknown() &&
+		len(m.RepeatOnDays.Elements()) > 0
+	if modeKnown && daysSet && mode != "EVERY_WEEK" {
+		errs = append(errs, fmt.Sprintf(
+			"repeat_on_days is only used when mode is EVERY_WEEK (mode is %q)", mode))
+	}
+
+	startKnown := !m.TimeRangeStart.IsUnknown()
+	endKnown := !m.TimeRangeEnd.IsUnknown()
+	startSet := startKnown && !m.TimeRangeStart.IsNull() && m.TimeRangeStart.ValueString() != ""
+	endSet := endKnown && !m.TimeRangeEnd.IsNull() && m.TimeRangeEnd.ValueString() != ""
+	if startKnown && endKnown && startSet != endSet {
+		errs = append(errs, "time_range_start and time_range_end must be set together")
+	}
+
+	if !m.TimeAllDay.IsUnknown() && m.TimeAllDay.ValueBool() && (startSet || endSet) {
+		errs = append(errs,
+			"time_all_day = true cannot be combined with time_range_start/time_range_end")
+	}
+
+	return errs
 }
 
 func (r *firewallPolicyResource) Configure(
@@ -795,10 +986,9 @@ func modelToFirewallPolicy(
 		ICMPTypename:        model.ICMPTypename.ValueString(),
 		ICMPV6Typename:      model.ICMPV6Typename.ValueString(),
 		ConnectionStates:    []string{},
-		Schedule: &unifi.FirewallPolicySchedule{
-			Mode: "ALWAYS",
-		},
 	}
+
+	fp.Schedule = scheduleModelToAPI(ctx, model.Schedule, &diags)
 
 	// Round-trip the connection states (e.g. ["NEW"]) the controller reported.
 	// Omitting them makes a CUSTOM-state policy's PUT fail with HTTP 400 (#227).
@@ -912,6 +1102,64 @@ func endpointModelToDestination(
 	return ep
 }
 
+// scheduleModelToAPI converts the schedule object out of the Terraform model.
+// A null/unknown schedule falls back to an always-on schedule, preserving the
+// provider's behaviour from before the schedule attribute existed.
+func scheduleModelToAPI(
+	ctx context.Context,
+	obj types.Object,
+	diags *diag.Diagnostics,
+) *unifi.FirewallPolicySchedule {
+	if obj.IsNull() || obj.IsUnknown() {
+		return &unifi.FirewallPolicySchedule{Mode: "ALWAYS"}
+	}
+
+	var m firewallPolicyScheduleModel
+	diags.Append(obj.As(ctx, &m, basetypes.ObjectAsOptions{})...)
+	if diags.HasError() {
+		return nil
+	}
+
+	s := &unifi.FirewallPolicySchedule{
+		Mode:           m.Mode.ValueString(),
+		Date:           m.Date.ValueString(),
+		TimeAllDay:     m.TimeAllDay.ValueBool(),
+		TimeRangeStart: m.TimeRangeStart.ValueString(),
+		TimeRangeEnd:   m.TimeRangeEnd.ValueString(),
+	}
+	if !m.RepeatOnDays.IsNull() && !m.RepeatOnDays.IsUnknown() {
+		diags.Append(m.RepeatOnDays.ElementsAs(ctx, &s.RepeatOnDays, false)...)
+	}
+	return s
+}
+
+// apiScheduleToModel converts the API schedule into the Terraform object value,
+// or a null object if the controller reported no schedule.
+func apiScheduleToModel(
+	ctx context.Context,
+	s *unifi.FirewallPolicySchedule,
+	diags *diag.Diagnostics,
+) types.Object {
+	attrTypes := firewallPolicyScheduleModel{}.AttributeTypes()
+	if s == nil {
+		return types.ObjectNull(attrTypes)
+	}
+
+	days, d := types.ListValueFrom(ctx, types.StringType, s.RepeatOnDays)
+	diags.Append(d...)
+
+	obj, d := types.ObjectValueFrom(ctx, attrTypes, firewallPolicyScheduleModel{
+		Mode:           types.StringValue(s.Mode),
+		Date:           types.StringValue(s.Date),
+		RepeatOnDays:   days,
+		TimeAllDay:     types.BoolValue(s.TimeAllDay),
+		TimeRangeStart: types.StringValue(s.TimeRangeStart),
+		TimeRangeEnd:   types.StringValue(s.TimeRangeEnd),
+	})
+	diags.Append(d...)
+	return obj
+}
+
 // endpointMatchingTargetType extracts the matching_target_type out of a
 // source/destination object, or a null string if the object is null/unknown.
 func endpointMatchingTargetType(
@@ -972,6 +1220,7 @@ func firewallPolicyToModel(
 	model.ConnectionStates = connStates
 	model.ICMPTypename = types.StringValue(fp.ICMPTypename)
 	model.ICMPV6Typename = types.StringValue(fp.ICMPV6Typename)
+	model.Schedule = apiScheduleToModel(ctx, fp.Schedule, &diags)
 
 	if fp.Index != nil {
 		model.Index = types.Int64Value(*fp.Index)

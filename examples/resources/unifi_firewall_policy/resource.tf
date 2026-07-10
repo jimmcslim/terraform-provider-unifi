@@ -135,6 +135,31 @@ resource "unifi_firewall_policy" "lan_dmz_ping" {
   }
 }
 
+# Block IoT internet access overnight on weekends using a schedule. Omit the
+# schedule block entirely for an always-on policy.
+resource "unifi_firewall_policy" "iot_weekend_curfew" {
+  name     = "Block IoT internet on weekend nights"
+  action   = "BLOCK"
+  protocol = "all"
+
+  schedule = {
+    mode             = "EVERY_WEEK"
+    repeat_on_days   = ["sat", "sun"]
+    time_range_start = "22:00"
+    time_range_end   = "06:00"
+  }
+
+  source = {
+    zone_id         = unifi_firewall_zone.iot.id
+    matching_target = "ANY"
+  }
+
+  destination = {
+    zone_id         = unifi_firewall_zone.lan.id
+    matching_target = "ANY"
+  }
+}
+
 # Block access to specific web domains (FQDN matching) from the LAN zone.
 resource "unifi_firewall_policy" "block_web_domains" {
   name     = "Block social media from LAN"
