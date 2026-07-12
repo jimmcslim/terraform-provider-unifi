@@ -1127,6 +1127,13 @@ func scheduleModelToAPI(
 		TimeRangeStart: m.TimeRangeStart.ValueString(),
 		TimeRangeEnd:   m.TimeRangeEnd.ValueString(),
 	}
+	if s.TimeAllDay {
+		// The controller rejects every schedule (including all-day ones) that
+		// omits a time range with api.err.MissingTimeRange, so synthesize the
+		// full-day range it expects instead of sending it empty.
+		s.TimeRangeStart = "00:00"
+		s.TimeRangeEnd = "23:59"
+	}
 	if !m.RepeatOnDays.IsNull() && !m.RepeatOnDays.IsUnknown() {
 		diags.Append(m.RepeatOnDays.ElementsAs(ctx, &s.RepeatOnDays, false)...)
 	}

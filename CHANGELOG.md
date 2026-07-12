@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- **`unifi_firewall_policy`: fix `schedule.time_all_day = true` failing with `api.err.MissingTimeRange` (400).** The controller requires `time_range_start`/`time_range_end` on every schedule, including all-day ones, but `scheduleModelToAPI` sent them empty whenever `time_all_day = true` — exactly the case the schema and config validator otherwise required. `time_all_day = true` now synthesizes the full-day range (`00:00`–`23:59`) confirmed by the UI/controller instead of omitting it; the Terraform config is unchanged, so existing `time_all_day = true` schedules need no edits (#1)
+
 ## [v0.55.0] - 2026-07-10
 
 ### ✨ Features

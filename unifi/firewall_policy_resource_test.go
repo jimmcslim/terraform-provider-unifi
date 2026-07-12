@@ -1670,9 +1670,11 @@ func TestFirewallPolicyScheduleRoundTrip(t *testing.T) {
 			TimeRangeEnd:   "17:30",
 		},
 		"one time only": {
-			Mode:       "ONE_TIME_ONLY",
-			Date:       "2026-12-31",
-			TimeAllDay: true,
+			Mode:           "ONE_TIME_ONLY",
+			Date:           "2026-12-31",
+			TimeAllDay:     true,
+			TimeRangeStart: "00:00",
+			TimeRangeEnd:   "23:59",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1707,6 +1709,37 @@ func TestFirewallPolicyScheduleRoundTrip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFirewallPolicyScheduleAllDayEmitsFullDayRange: the controller rejects every
+// schedule that omits a time range (api.err.MissingTimeRange), including all-day
+// ones, so scheduleModelToAPI must synthesize a full-day range rather than send
+// time_all_day = true with an empty range, which is what a config leaving
+// time_range_start/time_range_end unset produces.
+func TestFirewallPolicyScheduleAllDayEmitsFullDayRange(t *testing.T) {
+	ctx := context.Background()
+
+	obj, d := types.ObjectValueFrom(ctx, firewallPolicyScheduleModel{}.AttributeTypes(), firewallPolicyScheduleModel{
+		Mode:           types.StringValue("EVERY_DAY"),
+		Date:           types.StringValue(""),
+		RepeatOnDays:   types.ListNull(types.StringType),
+		TimeAllDay:     types.BoolValue(true),
+		TimeRangeStart: types.StringValue(""),
+		TimeRangeEnd:   types.StringValue(""),
+	})
+	if d.HasError() {
+		t.Fatalf("building schedule object: %v", d)
+	}
+
+	var diags diag.Diagnostics
+	got := scheduleModelToAPI(ctx, obj, &diags)
+	if diags.HasError() {
+		t.Fatalf("scheduleModelToAPI diagnostics: %v", diags)
+	}
+	if got.TimeRangeStart != "00:00" || got.TimeRangeEnd != "23:59" {
+		t.Errorf("all-day schedule = {TimeRangeStart: %q, TimeRangeEnd: %q}, want {00:00, 23:59}",
+			got.TimeRangeStart, got.TimeRangeEnd)
 	}
 }
 
